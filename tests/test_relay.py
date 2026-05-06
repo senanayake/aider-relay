@@ -146,7 +146,7 @@ class TestRelayStateMachine:
         primary = MockProvider(primary_turns, session_id="primary-session")
         fallback = MockProvider(fallback_turns, session_id="fallback-session")
 
-        with patch("scripts.relay_loop.make_provider") as mock_make:
+        with patch("aider.relay.loop.make_provider") as mock_make:
             mock_make.side_effect = lambda name: primary if name == "claude" else fallback
             if stdin_lines is not None:
                 with patch("builtins.input", side_effect=stdin_lines + [EOFError()]):
@@ -323,7 +323,7 @@ class TestRelayStateMachine:
     def _run_relay_autonomous(self, primary_turns, fallback_turns, max_turns=0):
         primary = MockProvider(primary_turns, session_id="primary-session")
         fallback = MockProvider(fallback_turns, session_id="fallback-session")
-        with patch("scripts.relay_loop.make_provider") as mock_make:
+        with patch("aider.relay.loop.make_provider") as mock_make:
             mock_make.side_effect = lambda name: primary if name == "claude" else fallback
             asyncio.run(
                 relay(
@@ -354,6 +354,36 @@ class TestRelayStateMachine:
         assert provider.tier == "agentic_cli"
 
 
+# ── heartbeat ─────────────────────────────────────────────────────────────────
+
+
+class TestHeartbeat:
+    def test_heartbeat_prints_elapsed(self, capsys):
+        """_heartbeat prints at least once when allowed to run longer than interval."""
+        from aider.relay.loop import _heartbeat
+
+        async def _run():
+            hb = asyncio.create_task(_heartbeat("TEST", interval=0.05))
+            await asyncio.sleep(0.12)
+            hb.cancel()
+            try:
+                await hb
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        out = capsys.readouterr().out
+        assert "elapsed" in out
+        assert "[TEST]" in out
+
+    def test_heartbeat_cancelled_on_fast_turn(self, capsys):
+        """Heartbeat does NOT fire when provider finishes quickly."""
+        provider = MockProvider([success_turn("fast")])
+        asyncio.run(run_turn(provider, "prompt", "TEST"))
+        out = capsys.readouterr().out
+        assert "elapsed" not in out
+
+
 # ── task-file support ────────────────────────────────────────────────────────
 
 
@@ -363,7 +393,7 @@ class TestTaskFile:
         task_file.write_text("build the OAuth feature")
 
         primary = MockProvider([success_turn()], session_id="p")
-        with patch("scripts.relay_loop.make_provider") as mock_make:
+        with patch("aider.relay.loop.make_provider") as mock_make:
             mock_make.side_effect = lambda name: primary
             with patch("builtins.input", side_effect=EOFError()):
                 asyncio.run(relay(task_file.read_text().strip(), "claude", "codex"))
