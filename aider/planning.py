@@ -179,6 +179,22 @@ class PlanningSnapshot:
             "trace_links": [item.to_dict() for item in self.trace_links],
         }
 
+    def to_spec_context(self) -> dict:
+        return {
+            "spec_framework": self.spec_framework,
+            "change_id": self.feature_id,
+            "feature": {
+                "id": self.feature_id,
+                "title": self.feature_title,
+                "root": self.feature_root,
+            },
+            "capability_summary": self.summary,
+            "artifact_refs": [item.to_dict() for item in self.artifact_refs],
+            "execution_context_pack": self.execution_context_pack,
+            "verification_refs": [item.to_dict() for item in self.verification_obligations],
+            "trace_refs": [item.to_dict() for item in self.trace_links],
+        }
+
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, sort_keys=False)
 

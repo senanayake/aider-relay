@@ -32,6 +32,7 @@ class MTARPSession:
     # Phase 2 fields (KB-2026-030 Step 6)
     files_in_scope: list = field(default_factory=list)  # files changed during session
     session_summary: str = ""  # LLM-generated summary of what was accomplished
+    spec_context: dict = field(default_factory=dict)  # framework-neutral planning refs
 
     def to_dict(self) -> dict:
         """Serialize to MTARP schema structure (nested, not flat)."""
@@ -56,6 +57,7 @@ class MTARPSession:
             "provider_history": list(self.provider_history),
             "files_in_scope": list(self.files_in_scope),
             "session_summary": self.session_summary,
+            "spec_context": dict(self.spec_context),
         }
 
     def validate_handoff(self) -> list[str]:
@@ -97,10 +99,13 @@ class MTARPSession:
             provider_history=data.get("provider_history", []),
             files_in_scope=data.get("files_in_scope", []),
             session_summary=data.get("session_summary", ""),
+            spec_context=data.get("spec_context", {}),
         )
 
     @classmethod
-    def create(cls, task: str, primary_provider: str) -> "MTARPSession":
+    def create(
+        cls, task: str, primary_provider: str, spec_context: dict | None = None
+    ) -> "MTARPSession":
         """Factory: create session capturing current git state. Graceful if git unavailable."""
 
         def _run(cmd):
@@ -120,6 +125,7 @@ class MTARPSession:
             git_branch=git_branch,
             git_diff_since=git_head,  # diff from session start shows what was done
             outgoing_provider=primary_provider,
+            spec_context=spec_context or {},
         )
 
     def add_provider_run(
