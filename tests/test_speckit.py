@@ -122,6 +122,24 @@ class TestSpecKitDiscovery:
             )
             assert artifacts["summary"]["has_speckit_artifacts"] is True
 
+    def test_discover_test_files_ignores_virtualenv_and_dependency_trees(self):
+        """Test discovery skips dependency/env trees like .venv and node_modules."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            (temp_path / ".venv" / "lib").mkdir(parents=True)
+            (temp_path / ".venv" / "lib" / "test_dependency.py").touch()
+            (temp_path / "node_modules" / "pkg").mkdir(parents=True)
+            (temp_path / "node_modules" / "pkg" / "test_pkg.py").touch()
+            (temp_path / "tests").mkdir()
+            (temp_path / "tests" / "test_real.py").touch()
+
+            discovery = SpecKitDiscovery(temp_dir)
+            artifacts = discovery.discover_artifacts()
+
+            assert artifacts["test_files"] == ["tests/test_real.py"]
+            assert artifacts["summary"]["total_test_files"] == 1
+
     def test_mtarp_readiness_calculation(self):
         """Test MTARP readiness calculation."""
         with tempfile.TemporaryDirectory() as temp_dir:

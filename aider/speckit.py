@@ -24,6 +24,19 @@ from aider.planning import (
 class SpecKitDiscovery:
     """Discovers and reports on SpecKit artifacts in a repository."""
 
+    _IGNORED_TEST_DIRS = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "site-packages",
+    }
+
     def __init__(self, root_path: str):
         self.root_path = Path(root_path)
 
@@ -64,16 +77,7 @@ class SpecKitDiscovery:
         artifacts["spec_directories"] = sorted(spec_dirs)
         artifacts["spec_files"] = sorted(spec_files)
 
-        test_patterns = ["*test*.py", "test_*.py"]
-        test_files = []
-        for pattern in test_patterns:
-            test_files.extend(self.root_path.rglob(pattern))
-
-        unique_tests = set()
-        for path in test_files:
-            if path.is_file():
-                unique_tests.add(str(path.relative_to(self.root_path)))
-        artifacts["test_files"] = sorted(unique_tests)
+        artifacts["test_files"] = self._discover_test_files()
 
         mtarp_readiness = self._calculate_mtarp_readiness(artifacts)
         artifacts["summary"] = {
@@ -92,6 +96,21 @@ class SpecKitDiscovery:
         }
 
         return artifacts
+
+    def _discover_test_files(self) -> list[str]:
+        """Return repo-local python test files while skipping env/dependency trees."""
+        test_files = set()
+        for current_root, dirnames, filenames in self.root_path.walk(top_down=True):
+            dirnames[:] = [
+                dirname for dirname in dirnames if dirname not in self._IGNORED_TEST_DIRS
+            ]
+            for filename in filenames:
+                if filename.endswith(".py") and (
+                    "test" in filename or filename.startswith("test_")
+                ):
+                    relpath = current_root.joinpath(filename).relative_to(self.root_path)
+                    test_files.add(str(relpath))
+        return sorted(test_files)
 
     def _calculate_mtarp_readiness(self, artifacts: dict[str, Any]) -> dict[str, Any]:
         """Calculate MTARP readiness based on discovered artifacts."""
