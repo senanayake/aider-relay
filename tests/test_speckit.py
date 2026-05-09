@@ -25,7 +25,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
@@ -42,7 +41,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create complete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -64,7 +62,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create incomplete spec directory (missing plan.md and tasks.md)
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -84,7 +81,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create multiple spec directories
             spec_dir1 = temp_path / "specs" / "001-feature"
             spec_dir1.mkdir(parents=True)
             (spec_dir1 / "spec.md").touch()
@@ -109,7 +105,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create test files
             (temp_path / "test_example.py").touch()
             (temp_path / "example_test.py").touch()
             (temp_path / "tests").mkdir()
@@ -132,12 +127,10 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
 
-            # Create complete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -156,7 +149,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create complete spec directory but no constitution
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -175,12 +167,10 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
 
-            # Create incomplete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -206,7 +196,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
@@ -216,15 +205,14 @@ class TestSpecKitDiscovery:
             report = discovery.format_status_report(artifacts)
 
             assert "SpecKit Status Report" in report
-            assert "Constitution: ✓ Found" in report
-            assert "MTARP Ready: ✗ No" in report
+            assert "Constitution: Found" in report
+            assert "MTARP Ready: No" in report
 
     def test_format_status_report_complete_spec(self):
         """Test status report formatting with complete spec."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create complete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -236,7 +224,7 @@ class TestSpecKitDiscovery:
             report = discovery.format_status_report(artifacts)
 
             assert "SpecKit Status Report" in report
-            assert "✓ Complete (spec.md, plan.md, tasks.md)" in report
+            assert "Complete (spec.md, plan.md, tasks.md)" in report
             assert "Complete spec directories: 1" in report
 
     def test_format_status_report_incomplete_spec(self):
@@ -244,7 +232,6 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create incomplete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -254,7 +241,7 @@ class TestSpecKitDiscovery:
             report = discovery.format_status_report(artifacts)
 
             assert "SpecKit Status Report" in report
-            assert "⚠ Incomplete (missing plan.md, tasks.md)" in report
+            assert "Incomplete (missing plan.md, tasks.md)" in report
             assert "Complete spec directories: 0" in report
 
     def test_format_status_report_mtarp_ready(self):
@@ -262,12 +249,10 @@ class TestSpecKitDiscovery:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
 
-            # Create complete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -278,7 +263,7 @@ class TestSpecKitDiscovery:
             artifacts = discovery.discover_artifacts()
             report = discovery.format_status_report(artifacts)
 
-            assert "MTARP Ready: ✓ Yes (constitution + 1 complete spec)" in report
+            assert "MTARP Ready: Yes (constitution + 1 complete spec)" in report
 
 
 class TestSpecKitCommands:
@@ -287,7 +272,6 @@ class TestSpecKitCommands:
         self.mock_io = Mock()
         self.mock_coder = Mock()
         self.mock_coder.root = None
-
         self.commands = Commands(io=self.mock_io, coder=self.mock_coder)
 
     def test_speckit_command_no_args(self):
@@ -320,7 +304,6 @@ class TestSpecKitCommands:
 
             self.commands.cmd_speckit("status")
 
-            # Should call tool_output with the status report
             self.mock_io.tool_output.assert_called_once()
             output = self.mock_io.tool_output.call_args[0][0]
             assert "SpecKit" in output or "No SpecKit artifacts found" in output
@@ -331,12 +314,10 @@ class TestSpecKitCommands:
             temp_path = Path(temp_dir)
             self.mock_coder.root = temp_dir
 
-            # Create constitution
             constitution_dir = temp_path / ".specify" / "memory"
             constitution_dir.mkdir(parents=True)
             (constitution_dir / "constitution.md").touch()
 
-            # Create complete spec directory
             spec_dir = temp_path / "specs" / "001-feature"
             spec_dir.mkdir(parents=True)
             (spec_dir / "spec.md").touch()
@@ -345,9 +326,59 @@ class TestSpecKitCommands:
 
             self.commands.cmd_speckit("status")
 
-            # Should call tool_output with the status report
             self.mock_io.tool_output.assert_called_once()
             output = self.mock_io.tool_output.call_args[0][0]
-            assert "Constitution: ✓ Found" in output
-            assert "✓ Complete" in output
-            assert "MTARP Ready: ✓ Yes" in output
+            assert "Constitution: Found" in output
+            assert "Complete" in output
+            assert "MTARP Ready: Yes" in output
+
+
+class TestSpecKitSnapshotCommands:
+    def setup_method(self):
+        self.mock_io = Mock()
+        self.mock_coder = Mock()
+        self.mock_coder.root = None
+        self.commands = Commands(io=self.mock_io, coder=self.mock_coder)
+
+    def test_speckit_snapshot_with_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self.mock_coder.root = temp_dir
+
+            constitution_dir = temp_path / ".specify" / "memory"
+            constitution_dir.mkdir(parents=True)
+            (constitution_dir / "constitution.md").write_text("# Constitution\n")
+
+            spec_dir = temp_path / "specs" / "001-feature"
+            spec_dir.mkdir(parents=True)
+            (spec_dir / "spec.md").write_text("# Title\n\n## Acceptance Criteria\n- [ ] Pending\n")
+            (spec_dir / "plan.md").write_text("# Plan\n\n### Stage 1: Snapshot\n")
+            (spec_dir / "tasks.md").write_text("# Tasks\n- [ ] Pending task\n")
+
+            self.commands.cmd_speckit("snapshot")
+
+            self.mock_io.tool_output.assert_called_once()
+            output = self.mock_io.tool_output.call_args[0][0]
+            assert '"spec_framework": "speckit"' in output
+            assert '"feature"' in output
+
+    def test_speckit_snapshot_requires_feature_for_multiple_specs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self.mock_coder.root = temp_dir
+
+            constitution_dir = temp_path / ".specify" / "memory"
+            constitution_dir.mkdir(parents=True)
+            (constitution_dir / "constitution.md").write_text("# Constitution\n")
+
+            for feature_name in ["001-feature", "002-feature"]:
+                spec_dir = temp_path / "specs" / feature_name
+                spec_dir.mkdir(parents=True)
+                (spec_dir / "spec.md").write_text("# Title\n")
+                (spec_dir / "plan.md").write_text("# Plan\n")
+                (spec_dir / "tasks.md").write_text("# Tasks\n")
+
+            self.commands.cmd_speckit("snapshot")
+
+            self.mock_io.tool_error.assert_called_once()
+            assert "Multiple spec directories found" in self.mock_io.tool_error.call_args[0][0]

@@ -6,11 +6,11 @@
 - [x] Prove current bootstrap with targeted SpecKit tests
 
 ## Stage 2: Planning Kernel + SpecKit Snapshot
-- [ ] Add planning-kernel data structures
-- [ ] Add SpecKit feature selection and ambiguity handling
-- [ ] Add deterministic JSON snapshot export
-- [ ] Add `/speckit snapshot`
-- [ ] Add snapshot tests for determinism and content mapping
+- [x] Add planning-kernel data structures
+- [x] Add SpecKit feature selection and ambiguity handling
+- [x] Add deterministic JSON snapshot export
+- [x] Add `/speckit snapshot`
+- [x] Add snapshot tests for determinism and content mapping
 
 ## Stage 3: Relay and MTARP Integration
 - [ ] Extend `MTARPSession` with framework-neutral spec references
