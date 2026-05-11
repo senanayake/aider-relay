@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+from aider.openspec import OpenSpecAdapter
 from aider.relay.loop import handoff_prompt, main, relay
 from aider.relay.session import MTARPSession
 from aider.speckit import SpecKitAdapter
@@ -51,6 +52,37 @@ def _write_sample_feature(root: Path, feature_name: str = "001-feature") -> Path
 def _sample_snapshot(root: Path):
     _write_sample_feature(root)
     return SpecKitAdapter(str(root)).build_snapshot()
+
+
+def _write_openspec_change(root: Path, change_name: str = "add-openspec-adapter") -> Path:
+    change_dir = root / "openspec" / "changes" / change_name
+    change_dir.mkdir(parents=True, exist_ok=True)
+    (change_dir / ".openspec.yaml").write_text("schema: spec-driven\n")
+    (change_dir / "proposal.md").write_text(
+        "## Why\n\n"
+        "Bridge OpenSpec changes into relay execution.\n\n"
+        "## What Changes\n\n"
+        "- Add OpenSpec snapshot loading support\n"
+    )
+    (change_dir / "tasks.md").write_text(
+        "## 1. Relay\n\n- [ ] 1.1 Inject OpenSpec planning context into the prompt\n"
+    )
+    delta_dir = change_dir / "specs" / "relay-planning"
+    delta_dir.mkdir(parents=True, exist_ok=True)
+    (delta_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: OpenSpec relay snapshot\n"
+        "The system MUST load an OpenSpec change into relay.\n\n"
+        "#### Scenario: OpenSpec handoff context\n"
+        "- **WHEN** relay loads an OpenSpec change\n"
+        "- **THEN** the prompt contains scenario obligations\n"
+    )
+    return change_dir
+
+
+def _sample_openspec_snapshot(root: Path):
+    _write_openspec_change(root)
+    return OpenSpecAdapter(str(root)).build_snapshot()
 
 
 class TestPlanningSnapshotSpecContext:
@@ -190,3 +222,24 @@ class TestRelayMainSpecLoading:
 
         assert captured["task"] == "test task"
         assert captured["snapshot"].feature_id == "001-feature"
+
+    def test_main_builds_snapshot_from_openspec_change(self, tmp_path, monkeypatch):
+        _write_openspec_change(tmp_path)
+        captured = {}
+
+        async def fake_relay(task, primary, fallback, sim_exhaust_after=0, **kwargs):
+            captured["task"] = task
+            captured["snapshot"] = kwargs.get("snapshot")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["aider-relay", "--openspec-change", "add-openspec-adapter", "test task"],
+        )
+
+        with patch("aider.relay.loop.relay", side_effect=fake_relay):
+            main()
+
+        assert captured["task"] == "test task"
+        assert captured["snapshot"].feature_id == "add-openspec-adapter"

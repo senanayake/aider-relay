@@ -19,6 +19,7 @@ from aider.format_settings import format_settings
 from aider.help import Help, install_help_extra
 from aider.io import CommandCompletionException
 from aider.llm import litellm
+from aider.openspec import OpenSpecAdapter
 from aider.repo import ANY_GIT_ERROR
 from aider.run_cmd import run_cmd
 from aider.scrape import Scraper, install_playwright
@@ -1697,6 +1698,48 @@ class Commands:
                 self.io.tool_output(snapshot.to_json())
         except Exception as e:
             self.io.tool_error(f"Error building SpecKit snapshot: {e}")
+
+    def cmd_openspec(self, args):
+        "OpenSpec integration commands (snapshot)"
+
+        args = args.strip()
+        if not args:
+            self.io.tool_error("Please specify an OpenSpec command. Available: snapshot")
+            return
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "snapshot":
+            self._cmd_openspec_snapshot(subargs)
+        else:
+            self.io.tool_error(f"Unknown OpenSpec command: {subcommand}. Available: snapshot")
+
+    def _cmd_openspec_snapshot(self, subargs):
+        """Build and display or write a deterministic OpenSpec planning snapshot."""
+        if not self.coder.root:
+            self.io.tool_error("No repository root found.")
+            return
+
+        if len(subargs) > 2:
+            self.io.tool_error("Usage: /openspec snapshot [change] [output-path]")
+            return
+
+        change = subargs[0] if subargs else None
+        output_path = subargs[1] if len(subargs) == 2 else None
+
+        try:
+            adapter = OpenSpecAdapter(self.coder.root)
+            snapshot = adapter.build_snapshot(change=change)
+            if output_path:
+                path = Path(self.coder.root) / output_path
+                snapshot.write_json(path)
+                self.io.tool_output(f"Wrote OpenSpec snapshot to {path}")
+            else:
+                self.io.tool_output(snapshot.to_json())
+        except Exception as e:
+            self.io.tool_error(f"Error building OpenSpec snapshot: {e}")
 
     def cmd_copy_context(self, args=None):
         """Copy the current chat context as markdown, suitable to paste into a web UI"""

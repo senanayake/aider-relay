@@ -21,6 +21,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aider.openspec import OpenSpecAdapter
 from aider.planning import PlanningSnapshot
 from aider.providers.base import BaseProvider
 from aider.providers.claude_code import ClaudeCodeProvider
@@ -467,13 +468,18 @@ async def relay(
 
 
 def _load_snapshot(
-    *, spec_feature: str | None = None, spec_snapshot_path: str | None = None
+    *,
+    spec_feature: str | None = None,
+    openspec_change: str | None = None,
+    spec_snapshot_path: str | None = None,
 ) -> PlanningSnapshot | None:
     """Load a planning snapshot from either a repo feature or a JSON file."""
-    if not spec_feature and not spec_snapshot_path:
+    if not spec_feature and not openspec_change and not spec_snapshot_path:
         return None
     if spec_snapshot_path:
         return PlanningSnapshot.read_json(spec_snapshot_path)
+    if openspec_change:
+        return OpenSpecAdapter(str(Path.cwd())).build_snapshot(change=openspec_change)
     return SpecKitAdapter(str(Path.cwd())).build_snapshot(feature=spec_feature)
 
 
@@ -511,6 +517,11 @@ def main():
         "--spec",
         metavar="FEATURE",
         help="Load planning context from a checked-in SpecKit feature directory",
+    )
+    spec_group.add_argument(
+        "--openspec-change",
+        metavar="CHANGE",
+        help="Load planning context from a checked-in OpenSpec change directory",
     )
     spec_group.add_argument(
         "--spec-snapshot",
@@ -558,7 +569,11 @@ def main():
         print("No task provided.")
         sys.exit(1)
     try:
-        snapshot = _load_snapshot(spec_feature=args.spec, spec_snapshot_path=args.spec_snapshot)
+        snapshot = _load_snapshot(
+            spec_feature=args.spec,
+            openspec_change=args.openspec_change,
+            spec_snapshot_path=args.spec_snapshot,
+        )
     except Exception as err:
         print(f"Unable to load planning context: {err}")
         sys.exit(1)
