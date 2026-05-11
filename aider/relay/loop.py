@@ -21,10 +21,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aider.openspec import OpenSpecAdapter
+from aider.planning import PlanningSnapshot
 from aider.providers.base import BaseProvider
 from aider.providers.claude_code import ClaudeCodeProvider
 from aider.providers.codex import CodexProvider
 from aider.relay.session import MTARPSession
+from aider.speckit import SpecKitAdapter
 
 _MAX_DIFF_CHARS = 8_000
 _CONTINUATION_PROMPT = (
@@ -150,6 +153,75 @@ def git_context(git_repo=None) -> str:
     return f"Recent git history:\n{log}\n\nCurrent uncommitted changes:\n{diff}"
 
 
+def _planning_context_section(spec_context: dict) -> str:
+    """Render compact, framework-neutral planning context for prompts."""
+    if not spec_context:
+        return ""
+
+    lines = ["## Planning Context"]
+
+    feature = spec_context.get("feature", {})
+    feature_bits = [bit for bit in [spec_context.get("change_id"), feature.get("title")] if bit]
+    if feature_bits:
+        lines.append(f"Feature: {' - '.join(feature_bits)}")
+
+    summary = spec_context.get("capability_summary")
+    if summary:
+        lines.extend(["", summary])
+
+    unresolved = spec_context.get("execution_context_pack", {}).get("unresolved_tasks", [])
+    if unresolved:
+        lines.extend(["", "Unresolved tasks:"])
+        for item in unresolved[:5]:
+            item_id = item.get("id", "TASK")
+            title = item.get("title", "").strip()
+            section = item.get("section", "").strip()
+            if section:
+                lines.append(f"- {item_id} ({section}): {title}")
+            else:
+                lines.append(f"- {item_id}: {title}")
+        if len(unresolved) > 5:
+            lines.append(f"- ... {len(unresolved) - 5} more")
+
+    pending_verification = [
+        item
+        for item in spec_context.get("verification_refs", [])
+        if item.get("status") != "completed"
+    ]
+    if pending_verification:
+        lines.extend(["", "Verification obligations:"])
+        for item in pending_verification[:5]:
+            lines.append(f"- {item.get('id', 'CHECK')}: {item.get('text', '').strip()}")
+        if len(pending_verification) > 5:
+            lines.append(f"- ... {len(pending_verification) - 5} more")
+
+    artifact_refs = spec_context.get("artifact_refs", [])
+    if artifact_refs:
+        lines.extend(["", "Artifact refs:"])
+        for item in artifact_refs[:4]:
+            sha = item.get("sha256", "")[:8]
+            suffix = f" [{sha}]" if sha else ""
+            lines.append(f"- {item.get('path', '')}{suffix}")
+        if len(artifact_refs) > 4:
+            lines.append(f"- ... {len(artifact_refs) - 4} more")
+
+    return "\n".join(lines)
+
+
+def _initial_prompt(task: str, spec_context: dict | None = None) -> str:
+    """Build the first provider prompt, adding planning context when supplied."""
+    if not spec_context:
+        return task
+
+    return (
+        "You are starting a coding task in this repository.\n\n"
+        f"## Task\n{task}\n\n"
+        f"{_planning_context_section(spec_context)}\n\n"
+        "Treat the planning context as intent. Verify it against the repository state before"
+        " editing."
+    )
+
+
 def handoff_prompt(task: str, session: MTARPSession | None = None, git_repo=None) -> str:
     session_diff = None
     if git_repo and session and session.git_diff_since and session.git_head:
@@ -179,10 +251,15 @@ def handoff_prompt(task: str, session: MTARPSession | None = None, git_repo=None
         if repomap:
             repomap_section = f"\n\n## Repository map (files touched this session)\n{repomap}"
 
+    planning_section = ""
+    if session and session.spec_context:
+        planning_section = f"\n\n{_planning_context_section(session.spec_context)}"
+
     base = (
         "You are continuing a coding task in this repository. "
         "A previous AI assistant was working on this and hit its usage limit.\n\n"
         f"## Task\n{task}\n"
+        f"{planning_section}"
         f"{repomap_section}\n\n"
         f"{context_section}\n\n"
         "Please continue from where the previous assistant left off."
@@ -263,16 +340,18 @@ async def relay(
     max_turns: int = 0,
     turn_timeout: int = 0,
     merge_review: bool = False,
+    snapshot: PlanningSnapshot | None = None,
 ) -> None:
     git_repo = _try_make_git_repo()
     providers = {primary: make_provider(primary), fallback: make_provider(fallback)}
     active = primary
-    prompt = task
+    spec_context = snapshot.to_spec_context() if snapshot else {}
+    prompt = _initial_prompt(task, spec_context=spec_context)
     exhausted: set[str] = set()
     turn_counts: dict[str, int] = {primary: 0, fallback: 0}
     total_turns = 0
 
-    session = MTARPSession.create(task=task, primary_provider=primary)
+    session = MTARPSession.create(task=task, primary_provider=primary, spec_context=spec_context)
     provider_started_at = datetime.now(tz=timezone.utc).isoformat()
 
     while True:
@@ -388,6 +467,22 @@ async def relay(
                 prompt = next_input
 
 
+def _load_snapshot(
+    *,
+    spec_feature: str | None = None,
+    openspec_change: str | None = None,
+    spec_snapshot_path: str | None = None,
+) -> PlanningSnapshot | None:
+    """Load a planning snapshot from either a repo feature or a JSON file."""
+    if not spec_feature and not openspec_change and not spec_snapshot_path:
+        return None
+    if spec_snapshot_path:
+        return PlanningSnapshot.read_json(spec_snapshot_path)
+    if openspec_change:
+        return OpenSpecAdapter(str(Path.cwd())).build_snapshot(change=openspec_change)
+    return SpecKitAdapter(str(Path.cwd())).build_snapshot(feature=spec_feature)
+
+
 def main():
     parser = argparse.ArgumentParser(description="aider-relay: multi-provider relay loop")
     parser.add_argument("task", nargs="?", help="Initial task (prompted if omitted)")
@@ -416,6 +511,22 @@ def main():
         "--task-file",
         metavar="PATH",
         help="Read initial task from a file (e.g. TASK.md)",
+    )
+    spec_group = parser.add_mutually_exclusive_group()
+    spec_group.add_argument(
+        "--spec",
+        metavar="FEATURE",
+        help="Load planning context from a checked-in SpecKit feature directory",
+    )
+    spec_group.add_argument(
+        "--openspec-change",
+        metavar="CHANGE",
+        help="Load planning context from a checked-in OpenSpec change directory",
+    )
+    spec_group.add_argument(
+        "--spec-snapshot",
+        metavar="PATH",
+        help="Load planning context from a deterministic snapshot JSON file",
     )
     parser.add_argument(
         "--turn-timeout",
@@ -457,6 +568,15 @@ def main():
     if not task:
         print("No task provided.")
         sys.exit(1)
+    try:
+        snapshot = _load_snapshot(
+            spec_feature=args.spec,
+            openspec_change=args.openspec_change,
+            spec_snapshot_path=args.spec_snapshot,
+        )
+    except Exception as err:
+        print(f"Unable to load planning context: {err}")
+        sys.exit(1)
 
     if args.exec_prefix:
         gateway_instruction = (
@@ -487,6 +607,7 @@ def main():
             max_turns=args.max_turns,
             turn_timeout=args.turn_timeout,
             merge_review=args.merge_review,
+            snapshot=snapshot,
         )
     )
 
