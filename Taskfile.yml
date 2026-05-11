@@ -33,6 +33,11 @@ tasks:
     cmds:
       - devcontainer exec --workspace-folder . --docker-path podman bash
 
+  dc:smoke:speckit:
+    desc: Run the SpecKit smoke test inside the devcontainer
+    cmds:
+      - devcontainer exec --workspace-folder . --docker-path podman task smoke:speckit
+
   # ── Code quality ──────────────────────────────────────────────────────────
 
   lint:
@@ -53,6 +58,118 @@ tasks:
     desc: Run test suite
     cmds:
       - uv run pytest tests/ -v
+
+  smoke:speckit:
+    desc: Smoke test SpecKit status, snapshot export, and relay planning-context injection
+    cmds:
+      - >-
+        bash -lc "set -euo pipefail;
+        .venv/bin/python -m aider.main --model gpt-4o-mini --yes-always
+        --message '/speckit status'"
+      - |
+        bash -lc "set -euo pipefail;
+        SNAPSHOT=\$(mktemp /tmp/aider-relay-speckit-XXXXXX.json);
+        .venv/bin/python -m aider.main --model gpt-4o-mini --yes-always --message \"/speckit snapshot 002-planning-kernel-snapshot \$SNAPSHOT\";
+        .venv/bin/python - \"\$SNAPSHOT\" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        path = Path(sys.argv[1])
+        data = json.loads(path.read_text())
+        summary = data['task_graph']['summary']
+        print(
+            'SMOKE SNAPSHOT: '
+            f\"feature={data['feature']['id']} \"
+            f\"framework={data['spec_framework']} \"
+            f\"completed={summary['completed']} \"
+            f\"pending={summary['pending']} \"
+            f\"verification={len(data['verification_obligations'])}\"
+        )
+        PY"
+      - |
+        bash -lc "set -euo pipefail;
+        .venv/bin/python - <<'PY'
+        import asyncio
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        from aider.relay.loop import relay
+        from aider.speckit import SpecKitAdapter
+        from tests.helpers import MockProvider, success_turn
+
+        with tempfile.TemporaryDirectory() as feature_root:
+            import pathlib
+
+            root = pathlib.Path(feature_root)
+            constitution_dir = root / '.specify' / 'memory'
+            constitution_dir.mkdir(parents=True, exist_ok=True)
+            (constitution_dir / 'constitution.md').write_text(
+                '# Constitution\n\n- Treat specs as intent.\n'
+            )
+
+            feature_dir = root / 'specs' / '900-smoke-feature'
+            feature_dir.mkdir(parents=True, exist_ok=True)
+            (feature_dir / 'spec.md').write_text(
+                '# Smoke Feature\n\n'
+                '## Overview\n\n'
+                'Prove relay prompt injection.\n\n'
+                '## Functional Requirements\n\n'
+                '- **FR-001**: Carry unresolved tasks into the prompt\n\n'
+                '## Acceptance Criteria\n\n'
+                '- [ ] Pending verification reaches the prompt\n'
+            )
+            (feature_dir / 'plan.md').write_text(
+                '# Plan\n\n'
+                '### Stage 1: Proof\n'
+                'Build a deterministic smoke fixture.\n'
+            )
+            (feature_dir / 'tasks.md').write_text(
+                '# Tasks\n\n'
+                '## Stage 1\n'
+                '- [ ] Keep one unresolved task visible to relay\n'
+            )
+
+            snapshot = SpecKitAdapter(str(root)).build_snapshot('900-smoke-feature')
+
+        primary = MockProvider([success_turn('ok')], session_id='smoke-primary')
+        fallback = MockProvider([], session_id='smoke-fallback')
+
+        with tempfile.TemporaryDirectory() as session_dir:
+            with patch('aider.relay.loop.make_provider') as mock_make:
+                mock_make.side_effect = lambda name: primary if name == 'claude' else fallback
+                with patch('builtins.input', side_effect=EOFError()):
+                    with redirect_stdout(io.StringIO()):
+                        asyncio.run(
+                            relay(
+                                'smoke task',
+                                'claude',
+                                'codex',
+                                session_dir=session_dir,
+                                snapshot=snapshot,
+                            )
+                        )
+
+        prompt = primary.prompts_received[0]
+        checks = {
+            'planning_context': '## Planning Context' in prompt,
+            'feature_title': snapshot.feature_title in prompt,
+            'unresolved_task': any(
+                task.title in prompt for task in snapshot.tasks if task.status != 'completed'
+            ),
+            'verification_obligation': any(
+                obligation.text in prompt for obligation in snapshot.verification_obligations
+            ),
+        }
+        print(
+            'SMOKE RELAY: '
+            + ', '.join(f\"{key}={'yes' if value else 'no'}\" for key, value in checks.items())
+        )
+        if not all(checks.values()):
+            raise SystemExit(1)
+        PY"
 
   # ── Security ──────────────────────────────────────────────────────────────
 
