@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   SPECKIT_REF: v0.8.7
+  OPENSPEC_VERSION: 1.3.1
 
 tasks:
   # ── Development environment ────────────────────────────────────────────────
@@ -46,10 +47,20 @@ tasks:
     cmds:
       - devcontainer exec --workspace-folder . --docker-path podman task smoke:specify
 
+  dc:smoke:openspec:
+    desc: Run the upstream OpenSpec bridge smoke test inside the devcontainer
+    cmds:
+      - devcontainer exec --workspace-folder . --docker-path podman task smoke:openspec
+
   dc:specify:
     desc: "Run upstream specify-cli inside the devcontainer (usage: task dc:specify -- <args>)"
     cmds:
       - devcontainer exec --workspace-folder . --docker-path podman task specify -- {{.CLI_ARGS}}
+
+  dc:openspec:
+    desc: "Run upstream OpenSpec inside the devcontainer (usage: task dc:openspec -- <args>)"
+    cmds:
+      - devcontainer exec --workspace-folder . --docker-path podman task openspec -- {{.CLI_ARGS}}
 
   # ── Code quality ──────────────────────────────────────────────────────────
 
@@ -76,6 +87,11 @@ tasks:
     desc: "Run upstream specify-cli in the current workspace (usage: task specify -- <args>)"
     cmds:
       - uvx --from git+https://github.com/github/spec-kit.git@{{.SPECKIT_REF}} specify {{.CLI_ARGS}}
+
+  openspec:
+    desc: "Run upstream OpenSpec in the current workspace (usage: task openspec -- <args>)"
+    cmds:
+      - npx -y @fission-ai/openspec@{{.OPENSPEC_VERSION}} {{.CLI_ARGS}}
 
   smoke:speckit:
     desc: Smoke test SpecKit status, snapshot export, and relay planning-context injection
@@ -195,6 +211,13 @@ tasks:
       SPECKIT_REF: "{{.SPECKIT_REF}}"
     cmds:
       - .venv/bin/python scripts/smoke_specify_bridge.py
+
+  smoke:openspec:
+    desc: Smoke test upstream OpenSpec init/change shell plus local snapshot consumption
+    env:
+      OPENSPEC_VERSION: "{{.OPENSPEC_VERSION}}"
+    cmds:
+      - .venv/bin/python scripts/smoke_openspec_bridge.py
 
   # ── Security ──────────────────────────────────────────────────────────────
 
