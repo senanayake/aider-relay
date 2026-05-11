@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
@@ -400,3 +401,37 @@ class TestSpecKitSnapshotCommands:
 
             self.mock_io.tool_error.assert_called_once()
             assert "Multiple spec directories found" in self.mock_io.tool_error.call_args[0][0]
+
+    def test_speckit_snapshot_uses_current_feature_pointer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self.mock_coder.root = temp_dir
+
+            constitution_dir = temp_path / ".specify" / "memory"
+            constitution_dir.mkdir(parents=True)
+            (constitution_dir / "constitution.md").write_text("# Constitution\n")
+
+            for feature_name in ["001-feature", "002-feature"]:
+                spec_dir = temp_path / "specs" / feature_name
+                spec_dir.mkdir(parents=True)
+                (spec_dir / "spec.md").write_text(
+                    "# Feature Specification: Title\n\n"
+                    "## User Scenarios & Testing\n\n"
+                    "### User Story 1 - Story (Priority: P1)\n"
+                    "Users complete the primary flow.\n"
+                    "**Independent Test**: Run the primary flow end-to-end.\n\n"
+                    "## Requirements\n\n"
+                    "- **FR-001**: System MUST support the main action\n\n"
+                    "## Success Criteria\n\n"
+                    "- **SC-001**: Users finish in under 1 minute\n"
+                )
+                (spec_dir / "plan.md").write_text("# Plan\n\n## Summary\n")
+            (temp_path / ".specify" / "feature.json").write_text(
+                json.dumps({"feature_directory": "specs/002-feature"})
+            )
+
+            self.commands.cmd_speckit("snapshot")
+
+            self.mock_io.tool_output.assert_called_once()
+            output = self.mock_io.tool_output.call_args[0][0]
+            assert '"id": "002-feature"' in output

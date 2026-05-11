@@ -6,6 +6,7 @@ SpecKit-style artifacts.
 """
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -205,34 +206,37 @@ class SpecKitAdapter:
         return sorted(item.name for item in specs_dir.iterdir() if item.is_dir())
 
     def build_snapshot(self, feature: str | None = None) -> PlanningSnapshot:
-        feature_name = self._resolve_feature_name(feature)
-        feature_dir = self.root_path / "specs" / feature_name
+        feature_name, feature_dir = self._resolve_feature(feature)
         artifact_paths = self._artifact_paths(feature_dir)
         artifact_refs = self._build_artifact_refs(artifact_paths)
 
         spec_path = artifact_paths["spec"]
-        plan_path = artifact_paths["plan"]
-        tasks_path = artifact_paths["tasks"]
+        plan_path = artifact_paths.get("plan")
+        if plan_path is not None and not plan_path.exists():
+            plan_path = None
+        tasks_path = artifact_paths.get("tasks")
+        if tasks_path is not None and not tasks_path.exists():
+            tasks_path = None
 
         spec_text = spec_path.read_text()
-        plan_text = plan_path.read_text()
-        tasks_text = tasks_path.read_text()
+        plan_text = plan_path.read_text() if plan_path else ""
+        tasks_text = tasks_path.read_text() if tasks_path else ""
 
         spec_relpath = str(spec_path.relative_to(self.root_path))
-        plan_relpath = str(plan_path.relative_to(self.root_path))
-        tasks_relpath = str(tasks_path.relative_to(self.root_path))
+        plan_relpath = str(plan_path.relative_to(self.root_path)) if plan_path else spec_relpath
+        tasks_relpath = str(tasks_path.relative_to(self.root_path)) if tasks_path else spec_relpath
 
         requirements = self._parse_requirements(spec_text, spec_relpath)
         plan_phases = self._parse_plan_phases(plan_text, plan_relpath)
         task_nodes = self._parse_task_nodes(tasks_text, tasks_relpath)
-        verification_obligations = self._parse_acceptance_criteria(spec_text, spec_relpath)
+        verification_obligations = self._parse_verification_obligations(spec_text, spec_relpath)
 
         return PlanningSnapshot(
             feature_id=feature_name,
             feature_title=self._extract_title(spec_text) or feature_name,
-            feature_root=f"specs/{feature_name}",
+            feature_root=str(feature_dir.relative_to(self.root_path)),
             artifact_refs=artifact_refs,
-            summary=self._extract_overview(spec_text),
+            summary=self._extract_summary(spec_text),
             requirements=requirements,
             plan_phases=plan_phases,
             tasks=task_nodes,
@@ -242,26 +246,77 @@ class SpecKitAdapter:
             ),
         )
 
-    def _resolve_feature_name(self, feature: str | None) -> str:
+    def _resolve_feature(self, feature: str | None) -> tuple[str, Path]:
+        feature_path = self._resolve_feature_path(feature)
+        return feature_path.name, feature_path
+
+    def _resolve_feature_path(self, feature: str | None) -> Path:
+        if feature:
+            explicit = self._coerce_feature_path(feature)
+            if explicit is not None:
+                return explicit
+
         features = self.list_features()
         if not features:
+            current_feature = self._load_current_feature_dir()
+            if current_feature is not None:
+                return current_feature
             raise ValueError("No spec directories found.")
+
         if feature:
             if feature in features:
-                return feature
+                return self.root_path / "specs" / feature
             matches = [name for name in features if name.startswith(feature)]
             if len(matches) == 1:
-                return matches[0]
+                return self.root_path / "specs" / matches[0]
             if len(matches) > 1:
                 raise ValueError(f"Feature '{feature}' is ambiguous. Matches: {', '.join(matches)}")
             raise ValueError(
                 f"Unknown feature '{feature}'. Available features: {', '.join(features)}"
             )
+
+        current_feature = self._load_current_feature_dir()
+        if current_feature is not None:
+            return current_feature
+
         if len(features) == 1:
-            return features[0]
+            return self.root_path / "specs" / features[0]
         raise ValueError(
             "Multiple spec directories found. Please specify one of: " + ", ".join(features)
         )
+
+    def _coerce_feature_path(self, feature: str) -> Path | None:
+        candidate = Path(feature)
+        if not candidate.is_absolute():
+            candidate = self.root_path / candidate
+        candidate = candidate.resolve(strict=False)
+
+        if candidate.exists() and candidate.is_dir() and (candidate / "spec.md").exists():
+            return candidate
+        return None
+
+    def _load_current_feature_dir(self) -> Path | None:
+        feature_file = self.root_path / ".specify" / "feature.json"
+        if not feature_file.exists():
+            return None
+
+        try:
+            data = json.loads(feature_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+        feature_dir = data.get("feature_directory")
+        if not feature_dir:
+            return None
+
+        path = Path(feature_dir)
+        if not path.is_absolute():
+            path = self.root_path / path
+        path = path.resolve(strict=False)
+
+        if path.exists() and path.is_dir() and (path / "spec.md").exists():
+            return path
+        return None
 
     def _artifact_paths(self, feature_dir: Path) -> dict[str, Path]:
         paths = {
@@ -269,17 +324,33 @@ class SpecKitAdapter:
             "spec": feature_dir / "spec.md",
             "plan": feature_dir / "plan.md",
             "tasks": feature_dir / "tasks.md",
+            "research": feature_dir / "research.md",
+            "data-model": feature_dir / "data-model.md",
+            "quickstart": feature_dir / "quickstart.md",
         }
-        missing = [name for name in ("spec", "plan", "tasks") if not paths[name].exists()]
+        missing = [name for name in ("spec",) if not paths[name].exists()]
         if missing:
             raise ValueError(
                 f"Feature '{feature_dir.name}' is missing required artifacts: {', '.join(missing)}"
             )
+
+        contracts_dir = feature_dir / "contracts"
+        if contracts_dir.exists() and contracts_dir.is_dir():
+            paths["contracts_dir"] = contracts_dir
+
         return paths
 
     def _build_artifact_refs(self, artifact_paths: dict[str, Path]) -> list[ArtifactRef]:
         refs = []
-        for kind in ("constitution", "spec", "plan", "tasks"):
+        for kind in (
+            "constitution",
+            "spec",
+            "plan",
+            "tasks",
+            "research",
+            "data-model",
+            "quickstart",
+        ):
             path = artifact_paths[kind]
             if not path.exists():
                 continue
@@ -290,6 +361,19 @@ class SpecKitAdapter:
                     sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 )
             )
+
+        contracts_dir = artifact_paths.get("contracts_dir")
+        if contracts_dir:
+            for contract_path in sorted(
+                path for path in contracts_dir.rglob("*") if path.is_file()
+            ):
+                refs.append(
+                    ArtifactRef(
+                        kind="contract",
+                        path=str(contract_path.relative_to(self.root_path)),
+                        sha256=hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+                    )
+                )
         return refs
 
     def _extract_title(self, text: str) -> str:
@@ -297,6 +381,21 @@ class SpecKitAdapter:
             if line.startswith("# "):
                 return line[2:].strip()
         return ""
+
+    def _extract_summary(self, text: str) -> str:
+        overview = self._extract_overview(text)
+        if overview:
+            return overview
+
+        story_summary = self._extract_first_story_summary(text)
+        if story_summary:
+            return story_summary
+
+        requirements = self._parse_requirements(text, "")
+        if requirements:
+            return requirements[0].text
+
+        return self._extract_title(text)
 
     def _extract_overview(self, text: str) -> str:
         lines = text.splitlines()
@@ -315,6 +414,25 @@ class SpecKitAdapter:
                     break
         return " ".join(collected)
 
+    def _extract_first_story_summary(self, text: str) -> str:
+        lines = text.splitlines()
+        in_story = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("### User Story"):
+                in_story = True
+                continue
+            if not in_story:
+                continue
+            if stripped.startswith("### ") or stripped.startswith("## "):
+                break
+            if not stripped:
+                continue
+            if stripped.startswith("**"):
+                continue
+            return stripped
+        return ""
+
     def _parse_requirements(self, text: str, source_path: str) -> list[RequirementRef]:
         pattern = re.compile(r"^- \*\*([A-Z]+-\d+)\*\*:\s*(.+)$")
         requirements = []
@@ -330,11 +448,12 @@ class SpecKitAdapter:
         phases = []
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("### "):
+            if stripped.startswith("## ") or stripped.startswith("### "):
+                title = stripped.lstrip("#").strip()
                 phases.append(
                     PlanPhase(
                         id=f"PHASE-{len(phases) + 1:03d}",
-                        title=stripped[4:].strip(),
+                        title=title,
                         source_path=source_path,
                     )
                 )
@@ -362,6 +481,14 @@ class SpecKitAdapter:
                 )
         return tasks
 
+    def _parse_verification_obligations(
+        self, text: str, source_path: str
+    ) -> list[VerificationObligation]:
+        obligations = self._parse_acceptance_criteria(text, source_path)
+        obligations.extend(self._parse_success_criteria(text, source_path))
+        obligations.extend(self._parse_independent_tests(text, source_path))
+        return obligations
+
     def _parse_acceptance_criteria(
         self, text: str, source_path: str
     ) -> list[VerificationObligation]:
@@ -385,6 +512,55 @@ class SpecKitAdapter:
                         kind="acceptance_criterion",
                         text=match.group(2).strip(),
                         status=status,
+                        source_path=source_path,
+                    )
+                )
+        return obligations
+
+    def _parse_success_criteria(self, text: str, source_path: str) -> list[VerificationObligation]:
+        obligations = []
+        in_success = False
+        pattern = re.compile(r"^- \*\*([A-Z]+-\d+)\*\*:\s*(.+)$")
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                if in_success and stripped.lower() != "## success criteria":
+                    break
+                in_success = stripped.lower() == "## success criteria"
+                continue
+            if not in_success:
+                continue
+            match = pattern.match(stripped)
+            if match:
+                obligations.append(
+                    VerificationObligation(
+                        id=match.group(1),
+                        kind="success_criterion",
+                        text=match.group(2),
+                        status="pending",
+                        source_path=source_path,
+                    )
+                )
+        return obligations
+
+    def _parse_independent_tests(self, text: str, source_path: str) -> list[VerificationObligation]:
+        obligations = []
+        story_id = 0
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### User Story"):
+                story_id += 1
+                continue
+            if stripped.startswith("**Independent Test**:"):
+                test_text = stripped.split(":", 1)[1].strip()
+                obligations.append(
+                    VerificationObligation(
+                        id=f"US{story_id:02d}-TEST",
+                        kind="independent_test",
+                        text=test_text,
+                        status="pending",
                         source_path=source_path,
                     )
                 )

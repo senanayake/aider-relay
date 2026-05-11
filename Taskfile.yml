@@ -1,5 +1,8 @@
 version: "3"
 
+vars:
+  SPECKIT_REF: v0.8.7
+
 tasks:
   # ── Development environment ────────────────────────────────────────────────
 
@@ -38,6 +41,16 @@ tasks:
     cmds:
       - devcontainer exec --workspace-folder . --docker-path podman task smoke:speckit
 
+  dc:smoke:specify:
+    desc: Run the upstream specify-cli bridge smoke test inside the devcontainer
+    cmds:
+      - devcontainer exec --workspace-folder . --docker-path podman task smoke:specify
+
+  dc:specify:
+    desc: "Run upstream specify-cli inside the devcontainer (usage: task dc:specify -- <args>)"
+    cmds:
+      - devcontainer exec --workspace-folder . --docker-path podman task specify -- {{.CLI_ARGS}}
+
   # ── Code quality ──────────────────────────────────────────────────────────
 
   lint:
@@ -58,6 +71,11 @@ tasks:
     desc: Run test suite
     cmds:
       - uv run pytest tests/ -v
+
+  specify:
+    desc: "Run upstream specify-cli in the current workspace (usage: task specify -- <args>)"
+    cmds:
+      - uvx --from git+https://github.com/github/spec-kit.git@{{.SPECKIT_REF}} specify {{.CLI_ARGS}}
 
   smoke:speckit:
     desc: Smoke test SpecKit status, snapshot export, and relay planning-context injection
@@ -170,6 +188,13 @@ tasks:
         if not all(checks.values()):
             raise SystemExit(1)
         PY"
+
+  smoke:specify:
+    desc: Smoke test upstream specify-cli init/scaffold plus local snapshot consumption
+    env:
+      SPECKIT_REF: "{{.SPECKIT_REF}}"
+    cmds:
+      - .venv/bin/python scripts/smoke_specify_bridge.py
 
   # ── Security ──────────────────────────────────────────────────────────────
 
