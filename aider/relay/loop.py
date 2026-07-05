@@ -14,10 +14,12 @@ Usage (source):
     python -m aider.relay.loop "add OAuth login"
     uv run aider-relay "add OAuth login"
 """
+
 import argparse
 import asyncio
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +28,13 @@ from aider.planning import PlanningSnapshot
 from aider.providers.base import BaseProvider
 from aider.providers.claude_code import ClaudeCodeProvider
 from aider.providers.codex import CodexProvider
+from aider.relay.campaign import CampaignEvent, CampaignState
+from aider.relay.campaign_runner import (
+    ScriptedCampaignWorker,
+    parse_duration_seconds,
+    run_autonomous_campaign,
+)
+from aider.relay.codex_worker import CodexCliCampaignWorker
 from aider.relay.session import MTARPSession
 from aider.speckit import SpecKitAdapter
 
@@ -483,7 +492,250 @@ def _load_snapshot(
     return SpecKitAdapter(str(Path.cwd())).build_snapshot(feature=spec_feature)
 
 
+def _campaign_worker_from_args(args):
+    if args.worker == "scripted":
+        return ScriptedCampaignWorker()
+    if args.worker == "codex":
+        return CodexCliCampaignWorker(
+            cwd=args.cwd,
+            sandbox=args.codex_sandbox,
+            approval_policy=args.codex_approval_policy,
+            ephemeral=not args.codex_persist_session,
+            turn_timeout=args.turn_timeout,
+            dangerously_bypass_approvals_and_sandbox=(
+                args.codex_dangerously_bypass_approvals_and_sandbox
+            ),
+        )
+    raise ValueError(f"Unknown campaign worker: {args.worker}")
+
+
+def _print_campaign_summary(state: CampaignState) -> None:
+    counts: dict[str, int] = {}
+    for queue in state.queues:
+        counts[queue.state.value] = counts.get(queue.state.value, 0) + 1
+
+    print(f"[CAMPAIGN] id: {state.campaign_id}")
+    print(f"[CAMPAIGN] active: {state.active_queue_id or '(none)'}")
+    print(
+        "[CAMPAIGN] queues: "
+        + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+    )
+    print(f"[CAMPAIGN] worker_turns: {len(state.worker_turns)}")
+    print(f"[CAMPAIGN] validation_receipts: {len(state.validation_receipts)}")
+    if state.stop_audit:
+        print(f"[CAMPAIGN] stopped: {state.stop_audit.reason}")
+    else:
+        print("[CAMPAIGN] stopped: no")
+
+
+def _print_campaign_event(event: CampaignEvent) -> None:
+    bits = [event.at, event.type]
+    if event.queue_id:
+        bits.append(f"queue={event.queue_id}")
+    if event.provider:
+        bits.append(f"provider={event.provider}")
+    print("[CAMPAIGN] " + " ".join(bits) + f" | {event.message}", flush=True)
+
+
+def _watch_campaign_status(state_path: Path, interval: float) -> None:
+    last_seen = 0
+    try:
+        while True:
+            if state_path.exists():
+                state = CampaignState.read(state_path)
+                for event in state.events[last_seen:]:
+                    _print_campaign_event(event)
+                last_seen = len(state.events)
+                _print_campaign_summary(state)
+                if state.stopped:
+                    return
+            else:
+                print(f"[CAMPAIGN] waiting for state file: {state_path}", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("[CAMPAIGN] watch interrupted")
+
+
+def campaign_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="aider-relay campaign control plane")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_common_run_args(run_parser):
+        run_parser.add_argument(
+            "--state",
+            default=".aider-relay/campaign.json",
+            help="Campaign state path",
+        )
+        run_parser.add_argument(
+            "--event-log",
+            default=".aider-relay/campaign.events.jsonl",
+            help="Append-only campaign event JSONL path",
+        )
+        run_parser.add_argument(
+            "--worker",
+            choices=["codex", "scripted"],
+            default="codex",
+            help="Campaign worker implementation",
+        )
+        run_parser.add_argument(
+            "--cwd",
+            default=".",
+            help="Working directory for provider and validation commands",
+        )
+        run_parser.add_argument(
+            "--max-queues",
+            type=int,
+            default=0,
+            help="Stop after N queues this invocation (0=unlimited)",
+        )
+        run_parser.add_argument(
+            "--max-runtime",
+            default="0",
+            help="Stop after duration, e.g. 12h, 90m, 86400s (0=unlimited)",
+        )
+        run_parser.add_argument(
+            "--heartbeat",
+            default="5m",
+            help="Emit heartbeat events every duration (0=disabled)",
+        )
+        run_parser.add_argument(
+            "--interrupt-file",
+            default=".aider-relay/interrupt",
+            help="Stop gracefully before the next queue when this file exists",
+        )
+        run_parser.add_argument(
+            "--pause-file",
+            default=".aider-relay/pause",
+            help="Pause before the next queue while this file exists",
+        )
+        run_parser.add_argument(
+            "--pause-poll-interval",
+            type=float,
+            default=5.0,
+            help="Seconds between pause/interrupt checks while paused",
+        )
+        run_parser.add_argument(
+            "--turn-timeout",
+            type=int,
+            default=3600,
+            help="Provider turn timeout in seconds",
+        )
+        run_parser.add_argument(
+            "--validation-timeout",
+            type=int,
+            default=1200,
+            help="Validation command timeout in seconds",
+        )
+        run_parser.add_argument(
+            "--require-clean-worktree",
+            action="store_true",
+            help="Refuse to start unless git status --porcelain is empty",
+        )
+        run_parser.add_argument(
+            "--checkpoint-command",
+            default="",
+            help=(
+                "Optional shell command after each queue. "
+                "Use {queue_id} placeholder, e.g. "
+                "'git add -A && git commit -m \"campaign checkpoint: {queue_id}\"'"
+            ),
+        )
+        run_parser.add_argument(
+            "--codex-sandbox",
+            choices=["read-only", "workspace-write", "danger-full-access"],
+            default="workspace-write",
+            help="Codex sandbox mode when not using dangerous bypass",
+        )
+        run_parser.add_argument(
+            "--codex-approval-policy",
+            choices=["untrusted", "on-request", "on-failure", "never"],
+            default="never",
+            help="Codex approval policy when not using dangerous bypass",
+        )
+        run_parser.add_argument(
+            "--codex-persist-session",
+            action="store_true",
+            help="Allow Codex to persist its own session files",
+        )
+        run_parser.add_argument(
+            "--codex-dangerously-bypass-approvals-and-sandbox",
+            action="store_true",
+            help=(
+                "Pass Codex --dangerously-bypass-approvals-and-sandbox. "
+                "Only use inside an externally isolated environment."
+            ),
+        )
+
+    run_parser = subparsers.add_parser("run", help="Start a campaign from a manifest")
+    run_parser.add_argument("--manifest", required=True, help="Campaign manifest YAML/JSON")
+    add_common_run_args(run_parser)
+
+    resume_parser = subparsers.add_parser("resume", help="Resume an existing campaign state")
+    add_common_run_args(resume_parser)
+
+    status_parser = subparsers.add_parser("status", help="Print campaign state summary")
+    status_parser.add_argument(
+        "--state",
+        default=".aider-relay/campaign.json",
+        help="Campaign state path",
+    )
+    status_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Poll campaign state and print new events until the campaign stops",
+    )
+    status_parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Watch polling interval in seconds",
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.command == "status":
+        state_path = Path(args.state)
+        if args.watch:
+            _watch_campaign_status(state_path, args.interval)
+            return
+        if not state_path.exists():
+            print(f"Campaign state not found: {state_path}")
+            sys.exit(1)
+        _print_campaign_summary(CampaignState.read(state_path))
+        return
+
+    if args.codex_dangerously_bypass_approvals_and_sandbox:
+        print(
+            "[CAMPAIGN] WARNING: Codex dangerous bypass is enabled. "
+            "Use only in an externally isolated environment."
+        )
+
+    worker = _campaign_worker_from_args(args)
+    state = run_autonomous_campaign(
+        manifest_path=args.manifest if args.command == "run" else None,
+        state_path=args.state,
+        worker=worker,
+        max_queues=args.max_queues,
+        validation_cwd=args.cwd,
+        validation_timeout=args.validation_timeout,
+        event_sink=_print_campaign_event,
+        event_log_path=args.event_log,
+        interrupt_path=args.interrupt_file,
+        pause_path=args.pause_file,
+        pause_poll_interval=args.pause_poll_interval,
+        max_runtime_seconds=parse_duration_seconds(args.max_runtime),
+        heartbeat_interval=parse_duration_seconds(args.heartbeat),
+        require_clean_worktree=args.require_clean_worktree,
+        checkpoint_command=args.checkpoint_command,
+    )
+    _print_campaign_summary(state)
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "campaign":
+        campaign_main(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="aider-relay: multi-provider relay loop")
     parser.add_argument("task", nargs="?", help="Initial task (prompted if omitted)")
     parser.add_argument("--primary", default="claude", choices=["claude", "codex"])

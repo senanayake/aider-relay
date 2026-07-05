@@ -5,6 +5,8 @@ aider.code-workspace
 .aider*
 !.aider-relay/
 .aider-relay/session.json
+.aider-relay/campaign.json
+.aider-relay/campaign.events.jsonl
 aider_chat.egg-info/
 build
 dist/
