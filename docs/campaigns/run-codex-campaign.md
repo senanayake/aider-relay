@@ -120,6 +120,34 @@ aider-relay campaign run \
 
 Only use dangerous bypass inside an externally isolated environment.
 
+## 3a. Run from inside the aider TUI
+
+You can also launch the same campaign from an aider session:
+
+```text
+/campaign run campaign.yaml --worker codex --codex-dangerously-bypass-approvals-and-sandbox
+```
+
+The TUI command is blocking: it streams campaign events into the chat transcript
+until the campaign stops or reaches a configured limit.
+
+Check status inside aider:
+
+```text
+/campaign status
+```
+
+Pause, resume, or stop before the next queue:
+
+```text
+/campaign pause
+/campaign unpause
+/campaign stop
+```
+
+The same `.aider-relay/campaign.json` and `.aider-relay/campaign.events.jsonl`
+files are used by the shell CLI and the TUI command.
+
 ## 4. Watch progress
 
 The run terminal and watch terminal show events such as:

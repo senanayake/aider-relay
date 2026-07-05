@@ -1,6 +1,8 @@
+import argparse
 import glob
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,6 +22,13 @@ from aider.help import Help, install_help_extra
 from aider.io import CommandCompletionException
 from aider.llm import litellm
 from aider.openspec import OpenSpecAdapter
+from aider.relay.campaign import CampaignState
+from aider.relay.campaign_runner import (
+    ScriptedCampaignWorker,
+    parse_duration_seconds,
+    run_autonomous_campaign,
+)
+from aider.relay.codex_worker import CodexCliCampaignWorker
 from aider.repo import ANY_GIT_ERROR
 from aider.run_cmd import run_cmd
 from aider.scrape import Scraper, install_playwright
@@ -1740,6 +1749,193 @@ class Commands:
                 self.io.tool_output(snapshot.to_json())
         except Exception as e:
             self.io.tool_error(f"Error building OpenSpec snapshot: {e}")
+
+    def cmd_campaign(self, args):
+        "Run and inspect aider-relay campaigns"
+
+        args = args.strip()
+        if not args:
+            self.io.tool_error("Usage: /campaign <run|resume|status|pause|unpause|stop> ...")
+            return
+
+        try:
+            parts = shlex.split(args)
+        except ValueError as err:
+            self.io.tool_error(f"Unable to parse /campaign arguments: {err}")
+            return
+
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+        try:
+            if subcommand == "run":
+                self._cmd_campaign_run(subargs)
+            elif subcommand == "resume":
+                self._cmd_campaign_resume(subargs)
+            elif subcommand == "status":
+                self._cmd_campaign_status(subargs)
+            elif subcommand == "pause":
+                self._cmd_campaign_pause()
+            elif subcommand == "unpause":
+                self._cmd_campaign_unpause()
+            elif subcommand == "stop":
+                self._cmd_campaign_stop()
+            else:
+                self.io.tool_error(
+                    "Unknown campaign command. Available: run, resume, status, pause, unpause, stop"
+                )
+        except SystemExit:
+            self.io.tool_error(f"Usage error for /campaign {subcommand}")
+        except Exception as err:
+            self.io.tool_error(f"Unable to complete /campaign {subcommand}: {err}")
+
+    def _cmd_campaign_parser(self, subcommand: str):
+        parser = argparse.ArgumentParser(prog=f"/campaign {subcommand}", add_help=False)
+        parser.add_argument("--state", default=".aider-relay/campaign.json")
+        parser.add_argument("--event-log", default=".aider-relay/campaign.events.jsonl")
+        parser.add_argument("--worker", choices=["codex", "scripted"], default="codex")
+        parser.add_argument("--max-queues", type=int, default=0)
+        parser.add_argument("--max-runtime", default="0")
+        parser.add_argument("--heartbeat", default="5m")
+        parser.add_argument("--turn-timeout", type=int, default=3600)
+        parser.add_argument("--validation-timeout", type=int, default=1200)
+        parser.add_argument("--interrupt-file", default=".aider-relay/interrupt")
+        parser.add_argument("--pause-file", default=".aider-relay/pause")
+        parser.add_argument("--pause-poll-interval", type=float, default=5.0)
+        parser.add_argument("--require-clean-worktree", action="store_true")
+        parser.add_argument("--checkpoint-command", default="")
+        parser.add_argument(
+            "--codex-sandbox",
+            choices=["read-only", "workspace-write", "danger-full-access"],
+            default="workspace-write",
+        )
+        parser.add_argument(
+            "--codex-approval-policy",
+            choices=["untrusted", "on-request", "on-failure", "never"],
+            default="never",
+        )
+        parser.add_argument("--codex-persist-session", action="store_true")
+        parser.add_argument("--codex-dangerously-bypass-approvals-and-sandbox", action="store_true")
+        return parser
+
+    def _cmd_campaign_run(self, subargs):
+        parser = self._cmd_campaign_parser("run")
+        parser.add_argument("manifest")
+        args = parser.parse_args(subargs)
+        self._run_campaign_from_args(args, manifest_path=args.manifest)
+
+    def _cmd_campaign_resume(self, subargs):
+        parser = self._cmd_campaign_parser("resume")
+        args = parser.parse_args(subargs)
+        self._run_campaign_from_args(args, manifest_path=None)
+
+    def _run_campaign_from_args(self, args, manifest_path: str | None):
+        if not self.coder.root:
+            self.io.tool_error("No repository root found.")
+            return
+
+        root = Path(self.coder.root)
+        worker = self._campaign_worker_from_args(args, root)
+        if args.codex_dangerously_bypass_approvals_and_sandbox:
+            self.io.tool_output(
+                "WARNING: Codex dangerous bypass is enabled. "
+                "Use only in an externally isolated environment."
+            )
+
+        state = run_autonomous_campaign(
+            manifest_path=str(root / manifest_path) if manifest_path else None,
+            state_path=root / args.state,
+            worker=worker,
+            max_queues=args.max_queues,
+            validation_cwd=root,
+            validation_timeout=args.validation_timeout,
+            event_sink=self._campaign_event_sink,
+            event_log_path=root / args.event_log,
+            interrupt_path=root / args.interrupt_file,
+            pause_path=root / args.pause_file,
+            pause_poll_interval=args.pause_poll_interval,
+            max_runtime_seconds=parse_duration_seconds(args.max_runtime),
+            heartbeat_interval=parse_duration_seconds(args.heartbeat),
+            require_clean_worktree=args.require_clean_worktree,
+            checkpoint_command=args.checkpoint_command,
+        )
+        self._print_campaign_summary(state)
+
+    def _campaign_worker_from_args(self, args, root: Path):
+        if args.worker == "scripted":
+            return ScriptedCampaignWorker()
+        return CodexCliCampaignWorker(
+            cwd=root,
+            sandbox=args.codex_sandbox,
+            approval_policy=args.codex_approval_policy,
+            ephemeral=not args.codex_persist_session,
+            turn_timeout=args.turn_timeout,
+            dangerously_bypass_approvals_and_sandbox=(
+                args.codex_dangerously_bypass_approvals_and_sandbox
+            ),
+        )
+
+    def _cmd_campaign_status(self, subargs):
+        parser = argparse.ArgumentParser(prog="/campaign status", add_help=False)
+        parser.add_argument("--state", default=".aider-relay/campaign.json")
+        parser.add_argument("--events", type=int, default=5)
+        args = parser.parse_args(subargs)
+
+        if not self.coder.root:
+            self.io.tool_error("No repository root found.")
+            return
+        state_path = Path(self.coder.root) / args.state
+        if not state_path.exists():
+            self.io.tool_error(f"Campaign state not found: {state_path}")
+            return
+
+        state = CampaignState.read(state_path)
+        self._print_campaign_summary(state)
+        for event in state.events[-args.events :]:
+            self._campaign_event_sink(event)
+
+    def _cmd_campaign_pause(self):
+        path = self._campaign_control_path("pause")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        self.io.tool_output(f"Campaign pause requested: {path}")
+
+    def _cmd_campaign_unpause(self):
+        path = self._campaign_control_path("pause")
+        if path.exists():
+            path.unlink()
+        self.io.tool_output(f"Campaign pause cleared: {path}")
+
+    def _cmd_campaign_stop(self):
+        path = self._campaign_control_path("interrupt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        self.io.tool_output(f"Campaign stop requested: {path}")
+
+    def _campaign_control_path(self, name: str) -> Path:
+        return Path(self.coder.root or ".") / ".aider-relay" / name
+
+    def _campaign_event_sink(self, event):
+        bits = [event.at, event.type]
+        if event.queue_id:
+            bits.append(f"queue={event.queue_id}")
+        if event.provider:
+            bits.append(f"provider={event.provider}")
+        self.io.tool_output("[CAMPAIGN] " + " ".join(bits) + f" | {event.message}")
+
+    def _print_campaign_summary(self, state: CampaignState):
+        counts = {}
+        for queue in state.queues:
+            counts[queue.state.value] = counts.get(queue.state.value, 0) + 1
+        self.io.tool_output(f"[CAMPAIGN] id: {state.campaign_id}")
+        self.io.tool_output(f"[CAMPAIGN] active: {state.active_queue_id or '(none)'}")
+        self.io.tool_output(
+            "[CAMPAIGN] queues: "
+            + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+        )
+        if state.stop_audit:
+            self.io.tool_output(f"[CAMPAIGN] stopped: {state.stop_audit.reason}")
+        else:
+            self.io.tool_output("[CAMPAIGN] stopped: no")
 
     def cmd_copy_context(self, args=None):
         """Copy the current chat context as markdown, suitable to paste into a web UI"""

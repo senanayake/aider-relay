@@ -90,6 +90,19 @@ validation command starts/outcomes, and campaign stops. The same events are pers
 They can also be appended to `.aider-relay/campaign.events.jsonl` so all-day campaigns do not rely
 only on the mutable state file for history.
 
+The Aider TUI exposes the same control plane through blocking slash commands:
+
+```text
+/campaign run campaign.yaml --worker codex
+/campaign status
+/campaign pause
+/campaign unpause
+/campaign stop
+```
+
+The first TUI integration intentionally blocks while streaming events through Aider IO. Background
+execution and full-screen dashboards remain separate future work.
+
 Operational controls now include:
 
 - interrupt sentinel: `.aider-relay/interrupt`
@@ -162,6 +175,7 @@ Treat any blocked queue as a blocked campaign.
 - Queue H added live campaign telemetry events and `campaign status --watch`.
 - Queue I added JSONL event logs, interrupt/pause sentinels, heartbeat/runtime controls,
   clean-worktree guard, checkpoint command hooks, and persisted Codex exhaustion metadata.
+- Queue J added blocking Aider TUI slash commands for campaign run, status, pause, unpause, and stop.
 - Focused regression validation on 2026-07-05:
 
 ```text
@@ -193,7 +207,8 @@ AIDER_RELAY_RUN_CODEX_CLI=1 python3 -m pytest \
 - Provider switching is not implemented yet. Codex exhaustion currently maps to an externally blocked
   queue outcome; a future provider pool should retry the same queue with another provider before
   blocking it.
-- There is no curses/full-screen UI. The current operator surface is live line-oriented telemetry,
+- There is no non-blocking/background TUI runner or curses/full-screen dashboard. The current
+  operator surface is blocking TUI slash commands, live line-oriented CLI telemetry,
   `campaign status --watch`, and persisted `.aider-relay/campaign.json`.
 - Heartbeats and max-runtime controls exist, but provider turns are still single blocking calls; there
   is no concurrent provider-side heartbeat while Codex is inside a long `codex exec` turn.
